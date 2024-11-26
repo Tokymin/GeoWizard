@@ -235,17 +235,13 @@ class StepOptim(object):
 
     def sigma(self, t):
         alpha_t = self.alpha(t)
-
         # 将 alpha_t 限制在 [0, 1] 范围内
         clipped_alpha_t = np.clip(alpha_t, 0, 1)
-
         # 添加一个小的下限到 sigma_t，防止出现极小值或零
         sigma_t = np.sqrt(np.maximum(1 - clipped_alpha_t * clipped_alpha_t, 1e-10))
-
         # 检查 sigma_t 是否有效
         if np.isnan(sigma_t).any() or np.isinf(sigma_t).any():
             print(f"NaN or Inf encountered in sigma calculation at t={t}")
-
         return sigma_t
 
     def lambda_func(self, t):
@@ -292,70 +288,63 @@ class StepOptim(object):
         return t
 
     def sel_lambdas_lof_obj(self, lambda_vec, eps):
-
+        # 预先计算不依赖于lambda_vec的值
         lambda_eps, lambda_T = self.lambda_func(eps).item(), self.lambda_func(self.T).item()
         lambda_vec_ext = np.concatenate((np.array([lambda_T]), lambda_vec, np.array([lambda_eps])))
         N = len(lambda_vec_ext) - 1
 
-        hv = np.zeros(N)
-        for i in range(N):
-            hv[i] = lambda_vec_ext[i + 1] - lambda_vec_ext[i]
+        # 计算 hv, elv, emlv_sq, alpha_vec, sigma_vec 和 data_err_vec
+        hv = np.diff(lambda_vec_ext)
         elv = np.exp(lambda_vec_ext)
         emlv_sq = np.exp(-2 * lambda_vec_ext)
         alpha_vec = 1. / np.sqrt(1 + emlv_sq)
         sigma_vec = 1. / np.sqrt(1 + np.exp(2 * lambda_vec_ext))
-        data_err_vec = (sigma_vec ** 2) / alpha_vec
-        # for pixel-space diffusion models, we empirically find (sigma_vec**1)/alpha_vec will be better
+        data_err_vec = (sigma_vec ** 2) / alpha_vec  # Pixel-space diffusion model中，sigma_vec ** 1可能表现更好
 
-        truncNum = 3  # For NFEs <= 7, set truncNum = 3 to avoid numerical instability; for NFEs > 7, truncNum = 0
-        res = 0.
+        truncNum = 3
+        res = 0.0
         c_vec = np.zeros(N)
+
+        # 针对每个区间进行计算
         for s in range(N):
-            if s in [0, N - 1]:
-                n, kp = s, 1
+            n = max(0, s - 2)  # 根据 s 的值设定 n 的起点，减少索引错误
+            if s == 0:
+                # 边界情况的直接计算
                 J_n_kp_0 = elv[n + 1] - elv[n]
                 res += abs(J_n_kp_0 * data_err_vec[n])
-            elif s in [1, N - 2]:
-                n, kp = s - 1, 2
-                J_n_kp_0 = -elv[n + 1] * self.H1(hv[n + 1]) / hv[n]
-                J_n_kp_1 = elv[n + 1] * (self.H1(hv[n + 1]) + hv[n] * self.H0(hv[n + 1])) / hv[n]
-                if s >= truncNum:
-                    c_vec[n] += data_err_vec[n] * J_n_kp_0
-                    c_vec[n + 1] += data_err_vec[n + 1] * J_n_kp_1
-                else:
-                    res += np.sqrt((data_err_vec[n] * J_n_kp_0) ** 2 + (data_err_vec[n + 1] * J_n_kp_1) ** 2)
+            elif s == N - 1:
+                # 另一边界情况的直接计算
+                J_n_kp_0 = elv[s] - elv[s - 1]
+                res += abs(J_n_kp_0 * data_err_vec[s - 1])
             else:
-                n, kp = s - 2, 3
-                J_n_kp_0 = elv[n + 2] * (self.H2(hv[n + 2]) + hv[n + 1] * self.H1(hv[n + 2])) / (
-                            hv[n] * (hv[n] + hv[n + 1]))
-                J_n_kp_1 = -elv[n + 2] * (self.H2(hv[n + 2]) + (hv[n] + hv[n + 1]) * self.H1(hv[n + 2])) / (
-                            hv[n] * hv[n + 1])
-                J_n_kp_2 = elv[n + 2] * (
-                            self.H2(hv[n + 2]) + (2 * hv[n + 1] + hv[n]) * self.H1(hv[n + 2]) + hv[n + 1] * (
-                                hv[n] + hv[n + 1]) * self.H0(hv[n + 2])) / (hv[n + 1] * (hv[n] + hv[n + 1]))
+                # 中间区间使用优化后的公式计算
+                J_n_kp = np.zeros(3)
+                if s >= 1:
+                    J_n_kp[0] = -elv[s] * self.H1(hv[s]) / hv[s - 1]
+                    J_n_kp[1] = elv[s] * (self.H1(hv[s]) + hv[s - 1] * self.H0(hv[s])) / hv[s - 1]
+                if s >= 2:
+                    J_n_kp[2] = elv[s] * (self.H2(hv[s]) + (2 * hv[s - 1] + hv[s - 2]) * self.H1(hv[s]) +
+                                          hv[s - 1] * (hv[s - 1] + hv[s - 2]) * self.H0(hv[s])) / (
+                                            hv[s - 1] * (hv[s - 1] + hv[s - 2]))
+
                 if s >= truncNum:
-                    c_vec[n] += data_err_vec[n] * J_n_kp_0
-                    c_vec[n + 1] += data_err_vec[n + 1] * J_n_kp_1
-                    c_vec[n + 2] += data_err_vec[n + 2] * J_n_kp_2
+                    # 累加结果，避免重新计算
+                    c_vec[n:n + len(J_n_kp)] += data_err_vec[n:n + len(J_n_kp)] * J_n_kp
                 else:
-                    res += np.sqrt((data_err_vec[n] * J_n_kp_0) ** 2 + (data_err_vec[n + 1] * J_n_kp_1) ** 2 + (
-                                data_err_vec[n + 2] * J_n_kp_2) ** 2)
-        res += sum(abs(c_vec))
+                    # 使用 Euclidean norm 聚合 res
+                    res += np.linalg.norm(data_err_vec[n:n + len(J_n_kp)] * J_n_kp)
+
+        res += np.sum(np.abs(c_vec))
+
         # 检查 res 中的 NaN 和 Inf 值
         if not np.isfinite(res):
             logging.error("Invalid value encountered in sel_lambdas_lof_obj calculation")
             return np.inf  # 返回一个大的数值，避免优化器继续此方向
+
         return res
 
     def get_ts_lambdas(self, N, eps, initType):
-        # eps is t_0 of diffusion sampling, e.g. 1e-3 for VP models
-        # initType: initTypes with '_origin' are baseline time step discretizations (without optimization)
-        # initTypes without '_origin' are optimized time step discretizations with corresponding baseline
-        # time step discretizations as initializations. For latent-space diffusion models, 'unif_t' is recommended.
-        # For pixel-space diffusion models, 'unif' is recommended (which is logSNR initialization)
-
         lambda_eps, lambda_T = self.lambda_func(eps).item(), self.lambda_func(self.T).item()
-
         # constraints
         constr_mat = np.zeros((N, N - 1))
         for i in range(N - 1):
@@ -364,43 +353,35 @@ class StepOptim(object):
         lb_vec = np.zeros(N)
         lb_vec[0], lb_vec[-1] = lambda_T, -lambda_eps
 
-        ub_vec = np.zeros(N)
-        for i in range(N):
-            ub_vec[i] = np.inf
+        ub_vec = np.full(N, np.inf)
         linear_constraint = LinearConstraint(constr_mat, lb_vec, ub_vec)
 
-        # initial vector
+        # initial vector based on initType
         if initType in ['unif', 'unif_origin']:
             lambda_vec_ext = torch.linspace(lambda_T, lambda_eps, N + 1)
-        elif initType in ['unif_t', 'unif_t_origin']:
-            t_vec = torch.linspace(self.T, eps, N + 1)
-            lambda_vec_ext = self.lambda_func(t_vec)
-        elif initType in ['edm', 'edm_origin']:
-            rho = 7
-            edm_sigma_min, edm_sigma_max = self.edm_sigma(eps).item(), self.edm_sigma(self.T).item()
-            edm_sigma_vec = torch.linspace(edm_sigma_max ** (1. / rho), edm_sigma_min ** (1. / rho), N + 1).pow(rho)
-            t_vec = self.edm_inverse_sigma(edm_sigma_vec)
-            lambda_vec_ext = self.lambda_func(t_vec)
         elif initType in ['quad', 'quad_origin']:
-            t_order = 2
+            t_order = 1.5  # 调整 t_order
             t_vec = torch.linspace(self.T ** (1. / t_order), eps ** (1. / t_order), N + 1).pow(t_order)
             lambda_vec_ext = self.lambda_func(t_vec)
         else:
             print('InitType not found!')
             return
 
-        # 打印 lambda_vec_ext 以确认初始化
-        print("lambda_vec_ext:", lambda_vec_ext)
-        if torch.isnan(lambda_vec_ext).any() or torch.isinf(lambda_vec_ext).any():
-            logging.error("NaN or Inf encountered in lambda_vec_ext initialization.")
-
-        if initType in ['unif_origin', 'unif_t_origin', 'edm_origin', 'quad_origin']:
+        if initType.endswith('_origin'):
             lambda_res = lambda_vec_ext
             t_res = torch.tensor(self.inverse_lambda(lambda_res))
         else:
             lambda_vec_init = np.array(lambda_vec_ext[1:-1])
-            res = minimize(self.sel_lambdas_lof_obj, lambda_vec_init, method='trust-constr', args=(eps),
-                           constraints=[linear_constraint], options={'verbose': 1})
+            res = minimize(
+                self.sel_lambdas_lof_obj,
+                lambda_vec_init,
+                method='SLSQP',  # 更换优化方法
+                args=(eps),
+                constraints=[linear_constraint],
+                options={'maxiter': 500, 'ftol': 1e-3, 'disp': True}  # 增加容忍度
+            )
             lambda_res = torch.tensor(np.concatenate((np.array([lambda_T]), res.x, np.array([lambda_eps]))))
             t_res = torch.tensor(self.inverse_lambda(lambda_res))
+
         return t_res, lambda_res
+

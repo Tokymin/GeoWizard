@@ -24,11 +24,12 @@ from models.unet_2d_condition import UNet2DConditionModel
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
+from config.config_test_for_clinical_dataset import hyperparameters as param
 
-if __name__=="__main__":
-    
+if __name__ == "__main__":
+    os.environ["CUDA_VISIBLE_DEVICES"] = param["CUDA"]
     logging.basicConfig(level=logging.INFO)
-    
+
     '''Set the Args'''
     parser = argparse.ArgumentParser(
         description="Run MonoDepthNormal Estimation using Stable Diffusion."
@@ -38,7 +39,7 @@ if __name__=="__main__":
         type=str,
         default='/mnt/share/toky/LLMs/Geowizard',
         help="pretrained model path from hugging face or local dir",
-    )    
+    )
     parser.add_argument(
         "--input_dir", type=str, required=True, help="Input directory."
     )
@@ -52,7 +53,7 @@ if __name__=="__main__":
         default='indoor',
         required=True,
         help="domain prediction",
-    )   
+    )
 
     # inference setting
     parser.add_argument(
@@ -101,17 +102,17 @@ if __name__=="__main__":
         default=0,
         help="Inference batch size. Default: 0 (will be set automatically).",
     )
-    
+
     args = parser.parse_args()
-    
+
     checkpoint_path = args.pretrained_model_path
     output_dir = args.output_dir
     denoise_steps = args.denoise_steps
     ensemble_size = args.ensemble_size
-    
-    if ensemble_size>15:
+
+    if ensemble_size > 15:
         logging.warning("long ensemble steps, low speed..")
-    
+
     half_precision = args.half_precision
 
     processing_res = args.processing_res
@@ -121,14 +122,15 @@ if __name__=="__main__":
     color_map = args.color_map
     seed = args.seed
     batch_size = args.batch_size
-    
-    if batch_size==0:
+
+    if batch_size == 0:
         batch_size = 1  # set default batchsize
-    
+
     # -------------------- Preparation --------------------
     # Random seed
     if seed is None:
         import time
+
         seed = int(time.time())
 
     # Output directories
@@ -153,7 +155,9 @@ if __name__=="__main__":
 
     # -------------------- Data --------------------
     input_dir = args.input_dir
-    test_files = sorted(os.listdir(input_dir))
+    start = param["start"]
+    num_images_to_load = param["num_images_to_load"]  # Example number, change as needed
+    test_files = sorted(os.listdir(input_dir))[start:num_images_to_load]
     n_images = len(test_files)
     if n_images > 0:
         logging.info(f"Found {n_images} images")
@@ -176,15 +180,15 @@ if __name__=="__main__":
     unet = UNet2DConditionModel.from_pretrained(checkpoint_path, subfolder="unet")
 
     pipe = DepthNormalEstimationPipeline(vae=vae,
-                                image_encoder=image_encoder,
-                                feature_extractor=feature_extractor,
-                                unet=unet,
-                                scheduler=scheduler)
+                                         image_encoder=image_encoder,
+                                         feature_extractor=feature_extractor,
+                                         unet=unet,
+                                         scheduler=scheduler)
 
     logging.info("loading pipeline whole successfully.")
 
     seed_all(seed)
-    
+
     try:
         pipe.enable_xformers_memory_efficient_attention()
     except:
@@ -205,14 +209,14 @@ if __name__=="__main__":
 
             # predict the depth & normal here
             pipe_out = pipe(input_image,
-                denoising_steps = denoise_steps,
-                ensemble_size= ensemble_size,
-                processing_res = processing_res,
-                match_input_res = match_input_res,
-                domain = domain,
-                color_map = color_map,
-                show_progress_bar = True,
-            )
+                            denoising_steps=denoise_steps,
+                            ensemble_size=ensemble_size,
+                            processing_res=processing_res,
+                            match_input_res=match_input_res,
+                            domain=domain,
+                            color_map=color_map,
+                            show_progress_bar=True,
+                            )
 
             depth_pred: np.ndarray = pipe_out.depth_np
             depth_colored: Image.Image = pipe_out.depth_colored

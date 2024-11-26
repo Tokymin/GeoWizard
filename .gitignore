@@ -5,7 +5,11 @@ __pycache__/
 .idea
 # C extensions
 *.so
-
+output
+test_Images
+geowizard/Saved_visulaization
+geowizard/Saved_depth_data
+geowizard/Saved_metrics_data
 # Distribution / packaging
 .Python
 build/

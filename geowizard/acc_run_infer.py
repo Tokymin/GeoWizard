@@ -6,12 +6,8 @@ import logging
 import sys
 from models.geowizard_pipeline import DepthNormalEstimationPipeline
 from utils.seed_all import seed_all
-import matplotlib.pyplot as plt
-from utils.depth2normal import *
-
 from diffusers import DiffusionPipeline, DDIMScheduler, AutoencoderKL
 from models.unet_2d_condition import UNet2DConditionModel
-
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
@@ -21,9 +17,7 @@ from tqdm.auto import tqdm
 from utils.depth2normal import *
 
 if __name__ == "__main__":
-    # ...省略了前面的设置代码
     logging.basicConfig(level=logging.INFO)
-
     '''Set the Args'''
     parser = argparse.ArgumentParser(
         description="Run MonoDepthNormal Estimation using Stable Diffusion."
@@ -120,7 +114,6 @@ if __name__ == "__main__":
     # Random seed
     if seed is None:
         import time
-
         seed = int(time.time())
 
     # Output directories
@@ -164,7 +157,6 @@ if __name__ == "__main__":
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(checkpoint_path, subfolder="image_encoder")
     feature_extractor = CLIPImageProcessor.from_pretrained(checkpoint_path, subfolder="feature_extractor")
     unet = UNet2DConditionModel.from_pretrained(checkpoint_path, subfolder="unet")
-
     pipe = DepthNormalEstimationPipeline(vae=vae,
                                          image_encoder=image_encoder,
                                          feature_extractor=feature_extractor,
@@ -183,33 +175,31 @@ if __name__ == "__main__":
     step_optim = StepOptim(ns)
 
     # 2. 使用优化器生成采样的时间步长序列
-    N = denoise_steps  # 使用输入的 denoise_steps 作为目标采样步数
+    N = denoise_steps // 5  # 将时间步数减少为三分之一
     eps = 1e-3  # 最小时间值，根据经验选择
-    initType = 'unif'  # 可以尝试不同的初始时间步方案
+    initType = 'quad'  # 可以尝试不同的初始时间步方案
     t_res, lambda_res = step_optim.get_ts_lambdas(N, eps, initType)
+    pipe.scheduler.timesteps = t_res  # 直接设置调度器的时间步长序列
+
 
     # -------------------- Inference and saving --------------------
     with torch.no_grad():
         os.makedirs(output_dir, exist_ok=True)
-
         for test_file in tqdm(test_files, desc="Estimating Depth & Normal", leave=True):
             rgb_path = os.path.join(input_dir, test_file)
-
             # Read input image
             input_image = Image.open(rgb_path)
-
             # 3. 预测深度和法线，使用优化后的时间步长
-            for t in t_res:  # 逐步应用优化的时间步
-                pipe_out = pipe(
-                    input_image,
-                    denoising_steps=N,  # 此处用优化后的时间步数替代
-                    ensemble_size=ensemble_size,
-                    processing_res=processing_res,
-                    match_input_res=match_input_res,
-                    domain=domain,
-                    color_map=color_map,
-                    show_progress_bar=True,
-                )
+            pipe_out = pipe(
+                input_image,
+                denoising_steps=args.denoise_steps,
+                ensemble_size=args.ensemble_size,
+                processing_res=args.processing_res,
+                match_input_res=not args.output_processing_res,
+                domain=args.domain,
+                color_map=args.color_map,
+                show_progress_bar=True,
+            )
 
             depth_pred: np.ndarray = pipe_out.depth_np
             depth_colored: Image.Image = pipe_out.depth_colored
@@ -218,7 +208,7 @@ if __name__ == "__main__":
 
             # Save depth and normal predictions as npy and color images
             rgb_name_base = os.path.splitext(os.path.basename(rgb_path))[0]
-            pred_name_base = rgb_name_base + "_pred"
+            pred_name_base = rgb_name_base + "_acced"
 
             npy_save_path = os.path.join(output_dir_npy, f"{pred_name_base}.npy")
             if os.path.exists(npy_save_path):
